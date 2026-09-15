@@ -86,6 +86,17 @@ blocks `/dev/dri` access even when the device is declared under
 any device at all (`RuntimeError: ... no supported devices found`),
 which looks identical to a missing `/dev/dri` mount but isn't one.
 
+The `Dockerfile` also skips Debian bookworm's `intel-opencl-icd` apt
+package (pinned to driver version 22.43, from late 2022) and instead
+installs current Intel Compute Runtime `.deb` releases directly from
+GitHub, on a `trixie`-based image (bookworm's glibc is too old for
+the current driver release). Bookworm's driver predates Alder Lake-N
+(this device's N100) and silently enumerates zero GPU devices for it
+— same underlying symptom as the AppArmor and missing-`/dev/dri`
+cases (`no supported devices found`), different cause. See
+**Verifying GPU acceleration** for how to tell these apart from the
+`/health` diagnostics without guessing.
+
 ## API
 
 ### `POST /upscale`
@@ -135,12 +146,26 @@ Docker/host shell access to the add-on's container.
    not something this add-on's code can fix). The add-on log carries
    the same information at startup (`EXECUTION_DEVICES=GPU` on
    success, or the traceback + diagnostics on failure).
-   If you see `RuntimeError: ... no supported devices found`, check
-   (in this order): `apparmor: false` is present in `config.yaml`
-   (Supervisor's default AppArmor profile blocks `/dev/dri` even when
-   it's mounted — this is the most common cause), that `/dev/dri`
-   passthrough is declared, and that the Intel Compute Runtime in the
-   container can see the device.
+   `no supported devices found` has three distinct causes that all
+   produce the identical error text — use `diagnostics` to tell them
+   apart instead of guessing:
+   - `dev_dri_contents: null` — `/dev/dri` isn't present in the
+     container at all. Check `apparmor: false` is in `config.yaml`
+     (Supervisor's default AppArmor profile blocks `/dev/dri` even
+     when it's declared under `devices:`) and that the passthrough
+     itself is declared.
+   - `dev_dri_contents` lists `card0`/`renderD128` (the device is
+     there) but `available_devices` is still `["CPU"]`, and
+     `opencl_vendor_icds` shows `/etc/OpenCL/vendors/intel.icd` — the
+     device node is reachable but the installed compute-runtime
+     driver doesn't recognize this GPU's PCI ID. This is what
+     happened on this device's N100: Debian bookworm's stock
+     `intel-opencl-icd` package predates Alder Lake-N. Confirm the
+     Dockerfile is actually building the current Intel `.deb`
+     releases (not silently falling back to an apt package) and that
+     the build didn't skip that layer.
+   - `opencl_vendor_icds` is empty — no OpenCL ICD installed at all;
+     the Dockerfile's driver-install step didn't run or failed.
 2. Send a test image to `/upscale`, then check `/health` — the
    `device` field should read `GPU`.
 3. `last_inference_ms` is a secondary sanity signal, not the primary
