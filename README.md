@@ -18,18 +18,38 @@ but this specific storage host and path are still live (checked
 2026-09-15) and are the same artifact host OMZ always used, so no
 substitute model was needed.
 
-This model has **fixed input/output tensor shapes** (not dynamic):
+This model has **fixed input/output tensor shapes** (not dynamic),
+and its **4x scale factor is baked into the architecture** — its
+pixel-shuffle upsampling depth is a fixed part of the graph, not
+derived from the input shape, so reshaping the model changes its
+working resolution but never its scale factor.
 
-- Input `0` (source image): `270x480` BGR
-- Input `1` (bicubic upsample of the source, pre-resized to 4x): `1080x1920` BGR
-- Output: `1080x1920` BGR
+The add-on is built for a **1920x1080 in → 3840x2160 (4K) out**
+contract, which is only a 2x jump. To fit that onto a fixed-4x model,
+`app.py` reshapes the model at startup to accept the full 1080p
+source untouched — preserving all real source detail rather than
+pre-shrinking it — runs it at its native 4x, and resizes the raw
+7680x4320 result down to the exact 4K target:
 
-The API takes care of both resizes server-side, so callers only ever
-send one image and receive one image back. Because the model's
-internal resolution is fixed, any uploaded image is resized to
-480x270 before inference and the output is always 1920x1080 — non
-16:9 source images will be stretched to that aspect ratio. This is an
-inherent limitation of this specific model, not a bug in the add-on.
+- Input `0` (source image): reshaped to `1920x1080` BGR
+- Input `1` (bicubic upsample of the source, pre-resized to native 4x): reshaped to `7680x4320` BGR
+- Raw model output: `7680x4320` BGR, resized server-side down to `3840x2160`
+
+The API takes care of every resize (up to the model's fixed input,
+and back down to 4K) server-side, so callers only ever send one image
+and receive one image back. Any uploaded image is resized to
+1920x1080 before inference — non 16:9 source images will be
+stretched to that aspect ratio.
+
+**Performance tradeoff:** because the model runs at true 1080p
+resolution instead of its originally-benchmarked 480x270, it's
+processing ~16x the pixels of the published reference benchmark
+(~250ms on a weaker iGPU than this device's). Expect inference times
+in the low seconds rather than sub-second, even on GPU — that's the
+cost of feeding it real full-resolution detail instead of a
+pre-shrunk source. This is a deliberate quality-over-speed choice;
+see **Verifying GPU acceleration** below for what a healthy number
+looks like at this resolution vs. a CPU-fallback number.
 
 ## Add-on structure
 
@@ -64,7 +84,8 @@ device's Intel N100.
 ### `POST /upscale`
 
 `multipart/form-data` upload, field name `file`, containing the
-source image. Returns the 4x-upscaled image as `image/png`.
+source image (ideally 1920x1080 — other sizes are stretched to fit).
+Returns a 3840x2160 (4K) image as `image/png`.
 
 ```bash
 curl -F "file=@input.jpg" http://<host>:5300/upscale -o output.png
@@ -76,7 +97,7 @@ curl -F "file=@input.jpg" http://<host>:5300/upscale -o output.png
 {
   "status": "ok",
   "device": "GPU",
-  "last_inference_ms": 187.3
+  "last_inference_ms": 1840.2
 }
 ```
 
@@ -90,18 +111,26 @@ request.
 
 ## Verifying GPU acceleration
 
-1. Check the add-on log for `EXECUTION_DEVICES=GPU` at startup.
+1. Check the add-on log for `EXECUTION_DEVICES=GPU` at startup. This
+   is the authoritative check: the model is compiled with an explicit
+   `device_name="GPU"` (never `AUTO`), so the add-on fails to start
+   outright — not silently fall back to CPU — if the GPU plugin can't
+   enumerate a device (check `/dev/dri` passthrough and that the
+   Intel Compute Runtime in the container can see it).
 2. Send a test image to `/upscale`, then check `/health` — the
-   `device` field should read `GPU` and `last_inference_ms` should be
-   in the low hundreds of milliseconds. The published reference
-   benchmark for this model is ~250ms on a weaker iGPU than this
-   device's UHD Graphics (Xe-LP); multi-second inference times mean
-   it silently fell back to CPU and needs debugging (check `/dev/dri`
-   passthrough and that the Intel Compute Runtime in the container can
-   see the device — the add-on will not start at all if the GPU
-   plugin can't enumerate a device, since `device_name="GPU"` is
-   explicit).
-3. Every `/upscale` request also logs `device=GPU time_ms=...` so you
+   `device` field should read `GPU`.
+3. `last_inference_ms` is a secondary sanity signal, not the primary
+   one: because this add-on runs the model at true 1080p (see
+   **Model** above), timings are naturally higher than the model's
+   original ~250ms reference benchmark (which used a much smaller
+   480x270 input) even on GPU — expect low single-digit seconds.
+   What still separates GPU from an accidental CPU fallback is scale,
+   not an absolute threshold: CPU on this hardware runs several times
+   slower than GPU for the same workload, so a number in the tens of
+   seconds despite `device: "GPU"` in `/health` is a strong signal
+   something's wrong upstream of the OpenVINO device check itself
+   (e.g. GPU present but thermal/power throttled).
+4. Every `/upscale` request also logs `device=GPU time_ms=...` so you
    can watch acceleration hold up under repeated real traffic, not
    just at startup.
 
