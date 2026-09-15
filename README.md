@@ -79,6 +79,13 @@ The add-on requires `/dev/dri` passthrough (already declared in
 GPU detector config) and only targets `amd64`, matching this
 device's Intel N100.
 
+`config.yaml` also sets `apparmor: false`. Supervisor wraps every
+add-on in a restrictive AppArmor profile by default, and that profile
+blocks `/dev/dri` access even when the device is declared under
+`devices:` — without disabling it, the GPU plugin fails to enumerate
+any device at all (`RuntimeError: ... no supported devices found`),
+which looks identical to a missing `/dev/dri` mount but isn't one.
+
 ## API
 
 ### `POST /upscale`
@@ -115,8 +122,12 @@ request.
    is the authoritative check: the model is compiled with an explicit
    `device_name="GPU"` (never `AUTO`), so the add-on fails to start
    outright — not silently fall back to CPU — if the GPU plugin can't
-   enumerate a device (check `/dev/dri` passthrough and that the
-   Intel Compute Runtime in the container can see it).
+   enumerate a device. If you see `RuntimeError: ... no supported
+   devices found`, check (in this order): `apparmor: false` is
+   present in `config.yaml` (Supervisor's default AppArmor profile
+   blocks `/dev/dri` even when it's mounted — this is the most common
+   cause), that `/dev/dri` passthrough is declared, and that the
+   Intel Compute Runtime in the container can see the device.
 2. Send a test image to `/upscale`, then check `/health` — the
    `device` field should read `GPU`.
 3. `last_inference_ms` is a secondary sanity signal, not the primary

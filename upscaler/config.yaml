@@ -1,5 +1,5 @@
 name: OpenVINO Image Upscaler
-version: "1.0.0"
+version: "1.0.1"
 slug: upscaler
 description: GPU-accelerated 4x image super-resolution via OpenVINO on the Intel iGPU
 url: https://github.com/Web3Dave/ha-upscayl-api
@@ -8,6 +8,7 @@ arch:
 startup: application
 boot: auto
 homeassistant_api: false
+apparmor: false
 devices:
   - /dev/dri:/dev/dri
 ports:
