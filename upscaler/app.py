@@ -56,16 +56,42 @@ def gpu_diagnostics(core: Core) -> dict:
         entries = {}
         for name in os.listdir(dri_path):
             full = os.path.join(dri_path, name)
+            entry = {}
             try:
                 st = os.stat(full)
-                entries[name] = {
-                    "mode": oct(stat.S_IMODE(st.st_mode)),
-                    "uid": st.st_uid,
-                    "gid": st.st_gid,
-                    "group_name": grp.getgrgid(st.st_gid).gr_name if not stat.S_ISDIR(st.st_mode) else None,
-                }
+                entry["mode"] = oct(stat.S_IMODE(st.st_mode))
+                entry["uid"] = st.st_uid
+                entry["gid"] = st.st_gid
+                if not stat.S_ISDIR(st.st_mode):
+                    try:
+                        entry["group_name"] = grp.getgrgid(st.st_gid).gr_name
+                    except KeyError:
+                        entry["group_name"] = None
+                        entry["group_name_note"] = "gid not mapped in this container's /etc/group"
             except Exception as exc:
-                entries[name] = {"stat_error": str(exc)}
+                entry["stat_error"] = str(exc)
+
+            if name in ("card0", "renderD128"):
+                # stat() only needs the parent dir's search bit; actually
+                # opening the device is what a cgroup device-controller
+                # restriction would block, even for root, so test that too.
+                try:
+                    fd = os.open(full, os.O_RDWR)
+                    os.close(fd)
+                    entry["open_rdwr"] = "ok"
+                except OSError as exc:
+                    entry["open_rdwr_error"] = f"{exc.strerror} (errno {exc.errno})"
+
+                pci_dir = f"/sys/class/drm/{name}/device"
+                for field in ("vendor", "device", "uevent"):
+                    field_path = os.path.join(pci_dir, field)
+                    try:
+                        with open(field_path) as f:
+                            entry[f"sysfs_{field}"] = f.read().strip()
+                    except Exception as exc:
+                        entry[f"sysfs_{field}_error"] = str(exc)
+
+            entries[name] = entry
         diag["dev_dri_contents"] = entries
     else:
         diag["dev_dri_contents"] = None
