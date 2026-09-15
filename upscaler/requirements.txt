@@ -1,0 +1,4 @@
+openvino==2024.6.0
+flask==3.0.3
+pillow==10.4.0
+numpy==1.26.4
