@@ -1,7 +1,11 @@
+import ctypes
 import glob
+import grp
 import io
 import logging
 import os
+import stat
+import subprocess
 import time
 import traceback
 
@@ -41,14 +45,64 @@ def gpu_diagnostics(core: Core) -> dict:
     except Exception as exc:
         diag["available_devices_error"] = str(exc)
 
+    diag["process"] = {
+        "uid": os.getuid(),
+        "gid": os.getgid(),
+        "groups": [grp.getgrgid(g).gr_name for g in os.getgroups()],
+    }
+
     dri_path = "/dev/dri"
     if os.path.isdir(dri_path):
-        diag["dev_dri_contents"] = os.listdir(dri_path)
+        entries = {}
+        for name in os.listdir(dri_path):
+            full = os.path.join(dri_path, name)
+            try:
+                st = os.stat(full)
+                entries[name] = {
+                    "mode": oct(stat.S_IMODE(st.st_mode)),
+                    "uid": st.st_uid,
+                    "gid": st.st_gid,
+                    "group_name": grp.getgrgid(st.st_gid).gr_name if not stat.S_ISDIR(st.st_mode) else None,
+                }
+            except Exception as exc:
+                entries[name] = {"stat_error": str(exc)}
+        diag["dev_dri_contents"] = entries
     else:
         diag["dev_dri_contents"] = None
         diag["dev_dri_error"] = f"{dri_path} does not exist in this container"
 
-    diag["opencl_vendor_icds"] = glob.glob("/etc/OpenCL/vendors/*")
+    icd_files = glob.glob("/etc/OpenCL/vendors/*")
+    icds = {}
+    for icd_path in icd_files:
+        try:
+            with open(icd_path) as f:
+                so_name = f.read().strip()
+        except Exception as exc:
+            icds[icd_path] = {"read_error": str(exc)}
+            continue
+        entry = {"so_name": so_name}
+        try:
+            ctypes.CDLL(so_name)
+            entry["dlopen"] = "ok"
+        except OSError as exc:
+            entry["dlopen_error"] = str(exc)
+        icds[icd_path] = entry
+    diag["opencl_vendor_icds"] = icds
+
+    dpkg_packages = ["intel-igc-core-2", "intel-igc-opencl-2", "intel-opencl-icd", "libigdgmm12"]
+    try:
+        out = subprocess.run(
+            ["dpkg-query", "-W", "-f=${Package}=${Version}\n", *dpkg_packages],
+            capture_output=True,
+            text=True,
+            timeout=5,
+        )
+        diag["installed_driver_packages"] = out.stdout.strip().splitlines()
+        if out.stderr.strip():
+            diag["installed_driver_packages_stderr"] = out.stderr.strip()
+    except Exception as exc:
+        diag["installed_driver_packages_error"] = str(exc)
+
     return diag
 
 
