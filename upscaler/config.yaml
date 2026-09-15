@@ -1,5 +1,5 @@
 name: OpenVINO Image Upscaler
-version: "1.0.7"
+version: "1.1.0"
 slug: upscaler
 description: GPU-accelerated 4x image super-resolution via OpenVINO on the Intel iGPU
 url: https://github.com/Web3Dave/ha-upscayl-api
@@ -18,5 +18,7 @@ ports_description:
   5300/tcp: Upscaler HTTP API
 options:
   port: 5300
+  api_key: ""
 schema:
   port: port
+  api_key: str?

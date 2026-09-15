@@ -209,3 +209,4 @@ Docker/host shell access to the add-on's container.
 | Option | Default | Description |
 |---|---|---|
 | `port` | `5300` | Port the API listens on. |
+| `api_key` | *(empty)* | Optional. If set, every request to every endpoint must include an `X-API-Key` header matching this value, or it gets `401`. Leave empty (the default) for open access on the internal network. |

@@ -1,6 +1,7 @@
 import ctypes
 import glob
 import grp
+import hmac
 import io
 import logging
 import os
@@ -35,6 +36,23 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(mess
 log = logging.getLogger("upscaler")
 
 app = Flask(__name__)
+
+API_KEY = os.environ.get("API_KEY", "").strip()
+if API_KEY:
+    log.info("API key configured - requests must include X-API-Key")
+else:
+    log.info("No API key configured - all requests accepted")
+
+
+@app.before_request
+def require_api_key():
+    if not API_KEY:
+        return None
+    provided = request.headers.get("X-API-Key", "")
+    if not hmac.compare_digest(provided, API_KEY):
+        return jsonify({"error": "missing or invalid X-API-Key header"}), 401
+    return None
+
 
 def gpu_diagnostics(core: Core) -> dict:
     """Collect enough context to debug a GPU-not-found failure over HTTP,
