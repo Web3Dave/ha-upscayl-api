@@ -90,12 +90,22 @@ The `Dockerfile` also skips Debian bookworm's `intel-opencl-icd` apt
 package (pinned to driver version 22.43, from late 2022) and instead
 installs current Intel Compute Runtime `.deb` releases directly from
 GitHub, on a `trixie`-based image (bookworm's glibc is too old for
-the current driver release). Bookworm's driver predates Alder Lake-N
-(this device's N100) and silently enumerates zero GPU devices for it
-— same underlying symptom as the AppArmor and missing-`/dev/dri`
-cases (`no supported devices found`), different cause. See
-**Verifying GPU acceleration** for how to tell these apart from the
-`/health` diagnostics without guessing.
+the current driver release) — worth keeping regardless of the next
+point, since it's the correct current driver either way.
+
+`config.yaml` also sets `full_access: true`. On this device (HAOS
+18.2), `/health` diagnostics showed `/dev/dri/card0` and `renderD128`
+correctly bind-mounted into the container with the right sysfs PCI ID
+(`8086:46D1`, confirmed Alder Lake-N) — but actually opening either
+device failed with `EPERM`, not `EACCES`. That distinction matters:
+`EACCES` would mean a Unix permission-bits problem; `EPERM` on an
+`open()` that passes `stat()` fine, even as root, is the signature of
+Docker's cgroup device-controller not granting an allow-rule for that
+device — a layer `devices:` alone didn't get right on this Supervisor
+version, even combined with `apparmor: false`. `full_access: true`
+maps to Docker's real `privileged` mode, which bypasses the cgroup
+device allowlist entirely instead of relying on that finer-grained
+(and apparently broken, here) passthrough path.
 
 ## API
 
