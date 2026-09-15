@@ -74,6 +74,17 @@ looks like at this resolution vs. a CPU-fallback number.
    traceback about no supported GPU devices, the add-on failed to
    start — see **Verifying GPU acceleration** below.
 
+**If you change `full_access`, `apparmor`, or `devices` in
+`config.yaml` after already having the add-on installed, a
+rebuild/update is not enough** — Docker's privileged/device-cgroup
+permissions are set when a container is *created*, not on restart or
+rebuild. Fully **uninstall** the add-on and **reinstall** it to force
+Supervisor to create a fresh container with the new permissions; this
+was the actual fix the one time this bit us during development (the
+`/health` diagnostics kept reporting `EPERM` on `/dev/dri` with
+`full_access: true` already set, across multiple rebuilds and even a
+full host reboot, until a real uninstall/reinstall).
+
 The add-on requires `/dev/dri` passthrough (already declared in
 `config.yaml`, same pattern as this device's working Frigate OpenVINO
 GPU detector config) and only targets `amd64`, matching this
@@ -124,8 +135,8 @@ curl -F "file=@input.jpg" http://<host>:5300/upscale -o output.png
 ```json
 {
   "status": "ok",
-  "device": "GPU",
-  "last_inference_ms": 1840.2
+  "device": "GPU.0",
+  "last_inference_ms": 3354.3
 }
 ```
 
