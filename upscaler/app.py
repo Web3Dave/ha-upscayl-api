@@ -185,8 +185,12 @@ def preprocess(image: Image.Image):
 
 
 def postprocess(result: np.ndarray) -> Image.Image:
+    # Despite taking 0-255 BGR inputs, this model's output is normalized to
+    # roughly [0, 1] (its graph ends in a Sigmoid) rather than 0-255 like the
+    # input - has to be scaled back up before the uint8 cast, or every pixel
+    # truncates to 0 (a fully black image).
     arr = result[0].transpose(1, 2, 0)
-    arr = np.clip(arr, 0, 255).astype(np.uint8)
+    arr = np.clip(arr * 255.0, 0, 255).astype(np.uint8)
     arr = arr[:, :, ::-1]
     native = Image.fromarray(arr)
     return native.resize((TARGET_W, TARGET_H), Image.LANCZOS)
