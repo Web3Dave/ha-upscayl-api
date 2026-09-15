@@ -111,23 +111,36 @@ curl -F "file=@input.jpg" http://<host>:5300/upscale -o output.png
 `device` reflects OpenVINO's actual `EXECUTION_DEVICES` property for
 the compiled model (queried once at startup, since the model is
 compiled with an explicit `device_name="GPU"` — there is no `AUTO`
-fallback, so if the GPU isn't usable the add-on fails to start rather
-than silently running on CPU). `last_inference_ms` is the wall-clock
-time of the most recent `/upscale` inference call, updated on every
-request.
+fallback, so it never silently runs on CPU). `last_inference_ms` is
+the wall-clock time of the most recent `/upscale` inference call,
+updated on every request.
+
+If the GPU plugin can't enumerate a device at startup, the add-on
+does **not** crash-loop — it stays up and both `/health` and
+`/upscale` return HTTP 503 with `"status": "gpu_unavailable"`, the
+full startup traceback, and a `diagnostics` block (`available_devices`
+per OpenVINO, whether `/dev/dri` exists in the container and what's
+in it, and what OpenCL ICDs are installed). This exists specifically
+so the failure is debuggable with just `curl`, without needing
+Docker/host shell access to the add-on's container.
 
 ## Verifying GPU acceleration
 
-1. Check the add-on log for `EXECUTION_DEVICES=GPU` at startup. This
-   is the authoritative check: the model is compiled with an explicit
-   `device_name="GPU"` (never `AUTO`), so the add-on fails to start
-   outright — not silently fall back to CPU — if the GPU plugin can't
-   enumerate a device. If you see `RuntimeError: ... no supported
-   devices found`, check (in this order): `apparmor: false` is
-   present in `config.yaml` (Supervisor's default AppArmor profile
-   blocks `/dev/dri` even when it's mounted — this is the most common
-   cause), that `/dev/dri` passthrough is declared, and that the
-   Intel Compute Runtime in the container can see the device.
+1. `curl http://<host>:5300/health`. A healthy add-on returns
+   `"status": "ok"` with `"device": "GPU"`. A GPU that failed to
+   enumerate returns HTTP 503 with `"status": "gpu_unavailable"` and
+   a `diagnostics` block — read that first, it tells you exactly what
+   failed (e.g. `dev_dri_contents: null` means `/dev/dri` isn't even
+   present inside the container — a Supervisor/passthrough problem,
+   not something this add-on's code can fix). The add-on log carries
+   the same information at startup (`EXECUTION_DEVICES=GPU` on
+   success, or the traceback + diagnostics on failure).
+   If you see `RuntimeError: ... no supported devices found`, check
+   (in this order): `apparmor: false` is present in `config.yaml`
+   (Supervisor's default AppArmor profile blocks `/dev/dri` even when
+   it's mounted — this is the most common cause), that `/dev/dri`
+   passthrough is declared, and that the Intel Compute Runtime in the
+   container can see the device.
 2. Send a test image to `/upscale`, then check `/health` — the
    `device` field should read `GPU`.
 3. `last_inference_ms` is a secondary sanity signal, not the primary

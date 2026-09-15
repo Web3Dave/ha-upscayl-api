@@ -1,7 +1,9 @@
+import glob
 import io
 import logging
 import os
 import time
+import traceback
 
 import numpy as np
 from flask import Flask, jsonify, request, send_file
@@ -30,24 +32,63 @@ log = logging.getLogger("upscaler")
 
 app = Flask(__name__)
 
+def gpu_diagnostics(core: Core) -> dict:
+    """Collect enough context to debug a GPU-not-found failure over HTTP,
+    since the add-on container may not be reachable via docker exec."""
+    diag = {}
+    try:
+        diag["available_devices"] = core.available_devices
+    except Exception as exc:
+        diag["available_devices_error"] = str(exc)
+
+    dri_path = "/dev/dri"
+    if os.path.isdir(dri_path):
+        diag["dev_dri_contents"] = os.listdir(dri_path)
+    else:
+        diag["dev_dri_contents"] = None
+        diag["dev_dri_error"] = f"{dri_path} does not exist in this container"
+
+    diag["opencl_vendor_icds"] = glob.glob("/etc/OpenCL/vendors/*")
+    return diag
+
+
+# The model is compiled with an explicit device_name="GPU" (never "AUTO"),
+# so it never silently falls back to CPU. If GPU compile fails, the add-on
+# stays up (rather than crash-looping) and serves the failure + diagnostics
+# over /health and /upscale, since the container may not be reachable any
+# other way to debug it.
+compiled_model = None
+input_src = None
+input_bicubic = None
+output_layer = None
+startup_error = None
+last_inference = {"device": None, "ms": None}
+
 log.info("Loading model, reshaping to %dx%d source, compiling for device=GPU ...", SRC_W, SRC_H)
 core = Core()
-model = core.read_model(MODEL_XML)
-model.reshape(
-    {
-        model.inputs[0]: PartialShape([1, 3, SRC_H, SRC_W]),
-        model.inputs[1]: PartialShape([1, 3, NATIVE_H, NATIVE_W]),
+try:
+    model = core.read_model(MODEL_XML)
+    model.reshape(
+        {
+            model.inputs[0]: PartialShape([1, 3, SRC_H, SRC_W]),
+            model.inputs[1]: PartialShape([1, 3, NATIVE_H, NATIVE_W]),
+        }
+    )
+    compiled_model = core.compile_model(model, device_name="GPU")
+    input_src = compiled_model.input(0)
+    input_bicubic = compiled_model.input(1)
+    output_layer = compiled_model.output(0)
+
+    execution_devices = ",".join(compiled_model.get_property("EXECUTION_DEVICES"))
+    log.info("Model compiled. EXECUTION_DEVICES=%s", execution_devices)
+    last_inference["device"] = execution_devices
+except Exception:
+    log.error("GPU model compile FAILED:\n%s", traceback.format_exc())
+    startup_error = {
+        "error": traceback.format_exc(),
+        "diagnostics": gpu_diagnostics(core),
     }
-)
-compiled_model = core.compile_model(model, device_name="GPU")
-input_src = compiled_model.input(0)
-input_bicubic = compiled_model.input(1)
-output_layer = compiled_model.output(0)
-
-execution_devices = ",".join(compiled_model.get_property("EXECUTION_DEVICES"))
-log.info("Model compiled. EXECUTION_DEVICES=%s", execution_devices)
-
-last_inference = {"device": execution_devices, "ms": None}
+    log.error("GPU diagnostics: %s", startup_error["diagnostics"])
 
 
 def preprocess(image: Image.Image):
@@ -73,6 +114,8 @@ def postprocess(result: np.ndarray) -> Image.Image:
 
 @app.route("/health")
 def health():
+    if startup_error is not None:
+        return jsonify({"status": "gpu_unavailable", **startup_error}), 503
     return jsonify(
         {
             "status": "ok",
@@ -84,6 +127,9 @@ def health():
 
 @app.route("/upscale", methods=["POST"])
 def upscale():
+    if startup_error is not None:
+        return jsonify({"status": "gpu_unavailable", **startup_error}), 503
+
     if "file" not in request.files:
         return jsonify({"error": "no file field named 'file'"}), 400
 
